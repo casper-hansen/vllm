@@ -4,8 +4,10 @@ import torch
 from torch.nn.parameter import Parameter
 
 from vllm._C import ops
-from vllm.model_executor.layers.linear import LinearMethodBase, set_weight_attrs
-from vllm.model_executor.layers.quantization.base_config import QuantizationConfig
+from vllm.model_executor.layers.linear import (LinearMethodBase,
+                                               set_weight_attrs)
+from vllm.model_executor.layers.quantization.base_config import (
+    QuantizationConfig)
 
 
 def make_divisible(c, divisor):
@@ -48,8 +50,7 @@ class AWQConfig(QuantizationConfig):
         if self.weight_bits != 4:
             raise ValueError(
                 "Currently, only 4-bit weight quantization is supported for "
-                f"AWQ, but got {self.weight_bits} bits."
-            )
+                f"AWQ, but got {self.weight_bits} bits.")
 
         self.pack_factor_int16 = 16 // self.weight_bits
         self.pack_factor_int32 = 32 // self.weight_bits
@@ -57,17 +58,14 @@ class AWQConfig(QuantizationConfig):
 
         if self.version not in AWQConfig.get_supported_versions():
             raise ValueError(
-                f"Currently, only {AWQConfig.get_supported_versions()} versions of "
-                f"AWQ are supported, but got version {self.version}."
-            )
+                f"Currently, only {AWQConfig.get_supported_versions()} versions"
+                f" of AWQ are supported, but got version {self.version}.")
 
     def __repr__(self) -> str:
-        return (
-            f"AWQConfig(weight_bits={self.weight_bits}, "
-            f"group_size={self.group_size}, "
-            f"zero_point={self.zero_point}, "
-            f"version={self.version})"
-        )
+        return (f"AWQConfig(weight_bits={self.weight_bits}, "
+                f"group_size={self.group_size}, "
+                f"zero_point={self.zero_point}, "
+                f"version={self.version})")
 
     def get_name(self) -> str:
         return "awq"
@@ -107,6 +105,7 @@ class AWQConfig(QuantizationConfig):
 
 
 class AWQVersionFactory:
+
     @staticmethod
     def create_weights(
         quant_config: AWQConfig,
@@ -122,8 +121,7 @@ class AWQVersionFactory:
         if quant_config.version not in VERISON_TO_CLS:
             raise ValueError(
                 f"Unknown AWQ version {quant_config.version}. "
-                f"Currently, only {VERISON_TO_CLS.keys()} are supported."
-            )
+                f"Currently, only {VERISON_TO_CLS.keys()} are supported.")
 
         return VERISON_TO_CLS[quant_config.version](
             quant_config=quant_config,
@@ -144,7 +142,8 @@ class AWQVersionFactory:
         qweight = Parameter(
             torch.empty(
                 output_size // quant_config.interleave,
-                input_size // quant_config.pack_factor_int16 * quant_config.interleave,
+                input_size // quant_config.pack_factor_int16 *
+                quant_config.interleave,
                 dtype=torch.int16,
             ),
             requires_grad=False,
@@ -165,8 +164,8 @@ class AWQVersionFactory:
         # Zero Points.
         qzeros = Parameter(
             torch.empty(
-                calculate_zeros_width(input_size, quant_config.group_size)
-                * quant_config.pack_factor_int32,
+                calculate_zeros_width(input_size, quant_config.group_size) *
+                quant_config.pack_factor_int32,
                 output_size,
                 dtype=params_dtype,
             ),
@@ -186,8 +185,8 @@ class AWQVersionFactory:
         # Scales.
         scales = Parameter(
             torch.empty(
-                calculate_zeros_width(input_size, quant_config.group_size)
-                * quant_config.pack_factor_int32,
+                calculate_zeros_width(input_size, quant_config.group_size) *
+                quant_config.pack_factor_int32,
                 output_size,
                 dtype=params_dtype,
             ),
@@ -206,9 +205,9 @@ class AWQVersionFactory:
         return qweight, qzeros, scales
 
     @staticmethod
-    def gemv_fast_forward(
-        weights, x: torch.Tensor, bias: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
+    def gemv_fast_forward(weights,
+                          x: torch.Tensor,
+                          bias: Optional[torch.Tensor] = None) -> torch.Tensor:
         qweight = weights["qweight"]
         scales = weights["scales"]
         qzeros = weights["qzeros"]
@@ -267,14 +266,12 @@ class AWQLinearMethod(LinearMethodBase):
             raise ValueError(
                 "The input size is not aligned with the quantized "
                 "weight shape. This can be caused by too large "
-                "tensor parallel size."
-            )
+                "tensor parallel size.")
         if output_size_per_partition % self.quant_config.pack_factor_int32 != 0:
             raise ValueError(
                 "The output size is not aligned with the quantized "
                 "weight shape. This can be caused by too large "
-                "tensor parallel size."
-            )
+                "tensor parallel size.")
 
         # Make qweight depending on the AWQ version.
         qweight, qzeros, scales = AWQVersionFactory.create_weights(
