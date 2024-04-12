@@ -3,16 +3,18 @@ import json
 from dataclasses import dataclass
 from http import HTTPStatus
 from typing import Dict, List, Optional, Union
-from vllm.logger import init_logger
-from vllm.transformers_utils.tokenizer import get_tokenizer
+
+from pydantic import conint
+
 from vllm.engine.async_llm_engine import AsyncLLMEngine
-from vllm.entrypoints.openai.protocol import (CompletionRequest,
-                                              ChatCompletionRequest,
-                                              ErrorResponse, LogProbs,
-                                              ModelCard, ModelList,
+from vllm.entrypoints.openai.protocol import (ChatCompletionRequest,
+                                              CompletionRequest, ErrorResponse,
+                                              LogProbs, ModelCard, ModelList,
                                               ModelPermission)
+from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
 from vllm.sequence import Logprob
+from vllm.transformers_utils.tokenizer import get_tokenizer
 
 logger = init_logger(__name__)
 
@@ -50,10 +52,12 @@ class OpenAIServing:
         except RuntimeError:
             event_loop = None
 
-        if event_loop is not None and event_loop.is_running(
-        ):  # If the current is instanced by Ray Serve, there is already a running event loop
+        if event_loop is not None and event_loop.is_running():
+            # If the current is instanced by Ray Serve,
+            # there is already a running event loop
             event_loop.create_task(self._post_init())
-        else:  # When using single vLLM without engine_use_ray
+        else:
+            # When using single vLLM without engine_use_ray
             asyncio.run(self._post_init())
 
     async def _post_init(self):
@@ -64,7 +68,8 @@ class OpenAIServing:
         self.tokenizer = get_tokenizer(
             engine_model_config.tokenizer,
             tokenizer_mode=engine_model_config.tokenizer_mode,
-            trust_remote_code=engine_model_config.trust_remote_code)
+            trust_remote_code=engine_model_config.trust_remote_code,
+            truncation_side="left")
 
     async def show_available_models(self) -> ModelList:
         """Show available models. Right now we only have one model."""
@@ -162,15 +167,26 @@ class OpenAIServing:
             self,
             request: Union[ChatCompletionRequest, CompletionRequest],
             prompt: Optional[str] = None,
-            prompt_ids: Optional[List[int]] = None) -> List[int]:
+            prompt_ids: Optional[List[int]] = None,
+            truncate_prompt_tokens: Optional[conint(ge=1)] = None
+    ) -> List[int]:
         if not (prompt or prompt_ids):
             raise ValueError("Either prompt or prompt_ids should be provided.")
         if (prompt and prompt_ids):
             raise ValueError(
                 "Only one of prompt or prompt_ids should be provided.")
 
-        input_ids = prompt_ids if prompt_ids is not None else self.tokenizer(
-            prompt).input_ids
+        if prompt_ids is None:
+            tokenizer_kwargs = {} if truncate_prompt_tokens is None else {
+                "truncation": True,
+                "max_length": truncate_prompt_tokens,
+            }
+            input_ids = self.tokenizer(prompt, **tokenizer_kwargs).input_ids
+        elif truncate_prompt_tokens is not None:
+            input_ids = prompt_ids[-truncate_prompt_tokens:]
+        else:
+            input_ids = prompt_ids
+
         token_num = len(input_ids)
 
         if request.max_tokens is None:
@@ -178,8 +194,9 @@ class OpenAIServing:
 
         if token_num + request.max_tokens > self.max_model_len:
             raise ValueError(
-                f"This model's maximum context length is {self.max_model_len} tokens. "
-                f"However, you requested {request.max_tokens + token_num} tokens "
+                f"This model's maximum context length is "
+                f"{self.max_model_len} tokens. However, you requested "
+                f"{request.max_tokens + token_num} tokens "
                 f"({token_num} in the messages, "
                 f"{request.max_tokens} in the completion). "
                 f"Please reduce the length of the messages or completion.", )

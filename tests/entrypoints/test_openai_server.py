@@ -1,24 +1,29 @@
-import os
-import subprocess
-import time
-
-import sys
-import pytest
-import requests
-import ray  # using Ray for overall ease of process management, parallel requests, and debugging.
-import openai  # use the official client for correctness check
-from huggingface_hub import snapshot_download  # downloading lora to test lora requests
-
 # imports for guided decoding tests
 import json
-import jsonschema
+import os
 import re
+import subprocess
+import sys
+import time
+
+import jsonschema
+import openai  # use the official client for correctness check
+import pytest
+# using Ray for overall ease of process management, parallel requests,
+# and debugging.
+import ray
+import requests
+# downloading lora to test lora requests
+from huggingface_hub import snapshot_download
 
 from vllm.transformers_utils.tokenizer import get_tokenizer
 
 MAX_SERVER_START_WAIT_S = 600  # wait for server to start for 60 seconds
-MODEL_NAME = "HuggingFaceH4/zephyr-7b-beta"  # any model with a chat template should work here
-LORA_NAME = "typeof/zephyr-7b-beta-lora"  # technically this needs Mistral-7B-v0.1 as base, but we're not testing generation quality here
+# any model with a chat template should work here
+MODEL_NAME = "HuggingFaceH4/zephyr-7b-beta"
+# technically this needs Mistral-7B-v0.1 as base, but we're not testing
+# generation quality here
+LORA_NAME = "typeof/zephyr-7b-beta-lora"
 
 TEST_SCHEMA = {
     "type": "object",
@@ -59,8 +64,8 @@ TEST_SCHEMA = {
     "required": ["name", "age", "skills", "work history"]
 }
 
-TEST_REGEX = r"((25[0-5]|(2[0-4]|1\d|[1-9]|)\d)\.){3}" + \
-             r"(25[0-5]|(2[0-4]|1\d|[1-9]|)\d)"
+TEST_REGEX = (r"((25[0-5]|(2[0-4]|1\d|[1-9]|)\d)\.){3}"
+              r"(25[0-5]|(2[0-4]|1\d|[1-9]|)\d)")
 
 TEST_CHOICE = [
     "Python", "Java", "JavaScript", "C++", "C#", "PHP", "TypeScript", "Ruby",
@@ -120,8 +125,9 @@ def server(zephyr_lora_files):
     server_runner = ServerRunner.remote([
         "--model",
         MODEL_NAME,
+        # use half precision for speed and memory savings in CI environment
         "--dtype",
-        "bfloat16",  # use half precision for speed and memory savings in CI environment
+        "bfloat16",
         "--max-model-len",
         "8192",
         "--enforce-eager",
@@ -191,6 +197,27 @@ async def test_single_completion(server, client: openai.AsyncOpenAI,
     )
     assert completion.choices[0].text is not None and len(
         completion.choices[0].text) >= 5
+
+
+@pytest.mark.parametrize(
+    # first test base model, then test loras
+    "model_name",
+    [MODEL_NAME, "zephyr-lora", "zephyr-lora2"],
+)
+async def test_zero_logprobs(server, client: openai.AsyncOpenAI,
+                             model_name: str):
+    # test using token IDs
+    completion = await client.completions.create(
+        model=MODEL_NAME,
+        prompt=[0, 0, 0, 0, 0],
+        max_tokens=5,
+        temperature=0.0,
+        logprobs=0,
+    )
+    choice = completion.choices[0]
+    assert choice.logprobs is not None
+    assert choice.logprobs.token_logprobs is not None
+    assert choice.logprobs.top_logprobs is None
 
 
 @pytest.mark.parametrize(
@@ -316,9 +343,15 @@ async def test_completion_streaming(server, client: openai.AsyncOpenAI,
                                              temperature=0.0,
                                              stream=True)
     chunks = []
+    finish_reason_count = 0
     async for chunk in stream:
         chunks.append(chunk.choices[0].text)
+        if chunk.choices[0].finish_reason is not None:
+            finish_reason_count += 1
+    # finish reason should only return in last block
+    assert finish_reason_count == 1
     assert chunk.choices[0].finish_reason == "length"
+    assert chunk.choices[0].text
     assert chunk.usage == single_usage
     assert "".join(chunks) == single_output
 
@@ -357,13 +390,19 @@ async def test_chat_streaming(server, client: openai.AsyncOpenAI,
         stream=True,
     )
     chunks = []
+    finish_reason_count = 0
     async for chunk in stream:
         delta = chunk.choices[0].delta
         if delta.role:
             assert delta.role == "assistant"
         if delta.content:
             chunks.append(delta.content)
+        if chunk.choices[0].finish_reason is not None:
+            finish_reason_count += 1
+    # finish reason should only return in last block
+    assert finish_reason_count == 1
     assert chunk.choices[0].finish_reason == stop_reason
+    assert delta.content
     assert "".join(chunks) == output
 
 
@@ -392,7 +431,8 @@ async def test_batch_completions(server, client: openai.AsyncOpenAI,
         max_tokens=5,
         temperature=0.0,
         extra_body=dict(
-            # NOTE: this has to be true for n > 1 in vLLM, but not necessary for official client.
+            # NOTE: this has to be true for n > 1 in vLLM, but not necessary
+            # for official client.
             use_beam_search=True),
     )
     assert len(batch.choices) == 4
@@ -469,8 +509,8 @@ async def test_logits_bias(server, client: openai.AsyncOpenAI):
 async def test_guided_json_completion(server, client: openai.AsyncOpenAI):
     completion = await client.completions.create(
         model=MODEL_NAME,
-        prompt=
-        f"Give an example JSON for an employee profile that fits this schema: {TEST_SCHEMA}",
+        prompt=f"Give an example JSON for an employee profile "
+        f"that fits this schema: {TEST_SCHEMA}",
         n=3,
         temperature=1.0,
         max_tokens=500,
@@ -489,9 +529,11 @@ async def test_guided_json_chat(server, client: openai.AsyncOpenAI):
         "role": "system",
         "content": "you are a helpful assistant"
     }, {
-        "role": "user",
-        "content": "Give an example JSON for an employee profile that " + \
-                    f"fits this schema: {TEST_SCHEMA}"
+        "role":
+        "user",
+        "content":
+        f"Give an example JSON for an employee profile that "
+        f"fits this schema: {TEST_SCHEMA}"
     }]
     chat_completion = await client.chat.completions.create(
         model=MODEL_NAME,
@@ -648,6 +690,56 @@ async def test_guided_decoding_type_error(server, client: openai.AsyncOpenAI):
             model=MODEL_NAME,
             prompt="Give an example string that fits this regex",
             extra_body=dict(guided_regex=TEST_REGEX, guided_json=TEST_SCHEMA))
+
+
+async def test_response_format_json_object(server, client: openai.AsyncOpenAI):
+    resp = await client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=[{
+            "role":
+            "user",
+            "content": ('what is 1+1? please respond with a JSON object, '
+                        'the format is {"result": 2}')
+        }],
+        response_format={"type": "json_object"})
+
+    content = resp.choices[0].message.content
+    loaded = json.loads(content)
+    assert loaded == {"result": 2}, loaded
+
+
+async def test_guided_grammar(server, client: openai.AsyncOpenAI):
+    simple_sql_grammar = """
+start: select_statement
+
+select_statement: "SELECT" column "from" table "where" condition
+
+column: "col_1" | "col_2"
+table: "table_1" | "table_2"
+condition: column "=" number
+
+number: "1" | "2"
+"""
+
+    completion = await client.completions.create(
+        model=MODEL_NAME,
+        prompt=("Generate a sql state that select col_1 from "
+                "table_1 where it is equals to 1"),
+        temperature=1.0,
+        max_tokens=500,
+        extra_body=dict(guided_grammar=simple_sql_grammar))
+
+    content = completion.choices[0].text
+
+    # use Lark to parse the output, and make sure it's a valid parse tree
+    from lark import Lark
+    parser = Lark(simple_sql_grammar)
+    parser.parse(content)
+
+    # remove spaces for comparison b/c we removed them in the grammar
+    ground_truth = "SELECT col_1 from table_1 where col_1 = 1".replace(" ", "")
+
+    assert content.strip() == ground_truth
 
 
 if __name__ == "__main__":
