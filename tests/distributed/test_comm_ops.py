@@ -1,35 +1,29 @@
 """Test the communication operators.
 
-Run `pytest tests/distributed/test_comm_ops.py --forked`.
+Run `pytest tests/distributed/test_comm_ops.py`.
 """
+import os
+
 import pytest
-import torch
 import ray
+import torch
 
-from vllm.config import ParallelConfig
-from vllm.utils import get_open_port
-from vllm.model_executor.parallel_utils.communication_op import (
-    tensor_model_parallel_all_reduce,
-    tensor_model_parallel_all_gather,
-    broadcast_tensor_dict,
-)
-from vllm.worker.worker import _init_distributed_environment
-
-
-def init_test_distributed_environment(pipeline_parallel_size: int,
-                                      tensor_parallel_size: int, rank: int,
-                                      distributed_init_port: str):
-    parallel_config = ParallelConfig(pipeline_parallel_size,
-                                     tensor_parallel_size,
-                                     worker_use_ray=True)
-    distributed_init_method = f"tcp://localhost:{distributed_init_port}"
-    _init_distributed_environment(parallel_config, rank,
-                                  distributed_init_method)
+from vllm.distributed import (broadcast_tensor_dict,
+                              tensor_model_parallel_all_gather,
+                              tensor_model_parallel_all_reduce)
+from vllm.test_utils import (init_test_distributed_environment,
+                             multi_process_tensor_parallel)
 
 
 @ray.remote(num_gpus=1, max_calls=1)
 def all_reduce_test_worker(tensor_parallel_size: int, rank: int,
                            distributed_init_port: str):
+    # it is important to delete the CUDA_VISIBLE_DEVICES environment variable
+    # so that each worker can see all the GPUs
+    # they will be able to set the device to the correct GPU
+    del os.environ["CUDA_VISIBLE_DEVICES"]
+    device = torch.device(f"cuda:{rank}")
+    torch.cuda.set_device(device)
     init_test_distributed_environment(1, tensor_parallel_size, rank,
                                       distributed_init_port)
     num_elements = 8
@@ -46,6 +40,12 @@ def all_reduce_test_worker(tensor_parallel_size: int, rank: int,
 @ray.remote(num_gpus=1, max_calls=1)
 def all_gather_test_worker(tensor_parallel_size: int, rank: int,
                            distributed_init_port: str):
+    # it is important to delete the CUDA_VISIBLE_DEVICES environment variable
+    # so that each worker can see all the GPUs
+    # they will be able to set the device to the correct GPU
+    del os.environ["CUDA_VISIBLE_DEVICES"]
+    device = torch.device(f"cuda:{rank}")
+    torch.cuda.set_device(device)
     init_test_distributed_environment(1, tensor_parallel_size, rank,
                                       distributed_init_port)
     num_dimensions = 3
@@ -68,6 +68,12 @@ def all_gather_test_worker(tensor_parallel_size: int, rank: int,
 @ray.remote(num_gpus=1, max_calls=1)
 def broadcast_tensor_dict_test_worker(tensor_parallel_size: int, rank: int,
                                       distributed_init_port: str):
+    # it is important to delete the CUDA_VISIBLE_DEVICES environment variable
+    # so that each worker can see all the GPUs
+    # they will be able to set the device to the correct GPU
+    del os.environ["CUDA_VISIBLE_DEVICES"]
+    device = torch.device(f"cuda:{rank}")
+    torch.cuda.set_device(device)
     init_test_distributed_environment(1, tensor_parallel_size, rank,
                                       distributed_init_port)
     test_dict = {
@@ -101,16 +107,4 @@ def broadcast_tensor_dict_test_worker(tensor_parallel_size: int, rank: int,
     broadcast_tensor_dict_test_worker
 ])
 def test_multi_process_tensor_parallel(tensor_parallel_size, test_target):
-    # Using ray helps debugging the error when it failed
-    # as compared to multiprocessing.
-    ray.init()
-
-    distributed_init_port = get_open_port()
-    refs = []
-    for rank in range(tensor_parallel_size):
-        refs.append(
-            test_target.remote(tensor_parallel_size, rank,
-                               distributed_init_port))
-    ray.get(refs)
-
-    ray.shutdown()
+    multi_process_tensor_parallel(tensor_parallel_size, test_target)
